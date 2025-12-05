@@ -14,6 +14,8 @@ dependencies = [
     "joblib",
     "numpy",
     "toolz",
+    "seaborn",
+    "sklearn",
     "scipy",
     "pandas",
     "tqdm"
@@ -41,3 +43,4 @@ merge_treatments="moseq_tools.merge_treatments:main"
 merge_treatment_from_yaml="moseq_tools.merge_treatment_from_yaml:main"
 generate-meta-clustering-features="moseq_tools.generate_meta_clustering_features:main"
 meta-cluster-syllable-ids="moseq_tools.meta_cluster_syllable_ids:main"
+syllable-library="moseq_tools.syllable_library:cli"

@@ -1,5 +1,6 @@
+#!/usr/bin/env python
 """
-Computes features for each syllable for a given experiment.
+Computes features for each syllable in a given experiment.
 
 Features include:
 - average mouse height
@@ -8,7 +9,7 @@ Features include:
 - average mouse speed
 - PC scores for a XX second window from the start of each syllable
 - syllable duration
-- normalized syllable frequency
+- dynamics characteristics from the autoregressive matrices
 """
 
 import h5py
