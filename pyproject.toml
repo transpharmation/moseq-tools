@@ -15,7 +15,7 @@ dependencies = [
     "numpy",
     "toolz",
     "seaborn",
-    "sklearn",
+    "scikit-learn",
     "scipy",
     "pandas",
     "tqdm"
