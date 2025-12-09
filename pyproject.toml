@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moseq_tools"
-version = "0.4.0"
+version = "0.4.1"
 description = "MoSEQ utilities"
 dependencies = [
     "pyyaml",
@@ -44,3 +44,4 @@ merge_treatment_from_yaml="moseq_tools.merge_treatment_from_yaml:main"
 generate-meta-clustering-features="moseq_tools.generate_meta_clustering_features:main"
 meta-cluster-syllable-ids="moseq_tools.meta_cluster_syllable_ids:main"
 syllable-library="moseq_tools.syllable_library:cli"
+generate-syllable-library-features="moseq_tools.generate_syllable_library_features:main"
