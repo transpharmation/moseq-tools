@@ -12,7 +12,6 @@
 #     "tqdm",
 # ]
 # ///
-import os
 import click
 import pandas as pd
 import numpy as np
@@ -33,6 +32,34 @@ import re
 
 # Compiled regex for version parsing
 VERSION_PATTERN = re.compile(r'v(\d+)\.(\d+)')
+DEFAULT_RANDOM_SEED = 0
+
+
+def set_random_seed(seed):
+    """Set the global NumPy random seed used by this command."""
+    np.random.seed(seed)
+
+
+def capture_random_state():
+    """Capture the current NumPy random state for joblib persistence."""
+    return np.random.get_state()
+
+
+def resolve_random_seed(model_objects, cli_seed):
+    """Resolve the seed for follow-on runs from CLI, saved metadata, or default."""
+    if cli_seed is not None:
+        return cli_seed
+
+    saved_seed = model_objects.get("random_seed")
+    if saved_seed is not None:
+        return saved_seed
+
+    print(
+        "Warning: model objects do not include random_seed; using default seed {}.".format(
+            DEFAULT_RANDOM_SEED
+        )
+    )
+    return DEFAULT_RANDOM_SEED
 
 
 def parse_version(version_str):
@@ -63,7 +90,7 @@ def load_manifest(output_path):
     """
     manifest_file = Path(output_path) / "library_manifest.json"
     if manifest_file.exists():
-        with open(manifest_file, 'r') as f:
+        with manifest_file.open('r') as f:
             return json.load(f)
     return {"versions": [], "original_library": None, "last_updated": None}
 
@@ -84,7 +111,9 @@ def get_library_filenames(version):
     )
 
 
-def compute_tsne_embedding(data, n_components=2, random_state=0, metric="cosine"):
+def compute_tsne_embedding(
+    data, n_components=2, random_state=DEFAULT_RANDOM_SEED, metric="cosine"
+):
     """
     Compute t-SNE embedding for the given data.
     
@@ -111,6 +140,36 @@ def robust_zscore(ser):
     return (ser - ser.median()) / (c * np.nanmedian(np.abs(ser - ser.median())))
 
 
+def validate_pc_components(pc_components, feature_df):
+    """Validate requested PCA components against available data dimensions."""
+    if pc_components is None or pc_components < 1:
+        raise ValueError(
+            "pc_components must be at least 1; got {}.".format(pc_components)
+        )
+
+    n_samples, n_features = feature_df.shape
+    if n_samples == 0 or n_features == 0:
+        raise ValueError(
+            "Cannot run PCA on empty feature data: found {} samples and {} features.".format(
+                n_samples, n_features
+            )
+        )
+
+    max_components = min(n_samples, n_features)
+    if pc_components > max_components:
+        raise ValueError(
+            "Requested {} PCA components, but only {} are available from the data "
+            "(n_samples={}, n_features={}). Reduce --pc-components to {} or provide "
+            "more syllables/features.".format(
+                pc_components,
+                max_components,
+                n_samples,
+                n_features,
+                max_components,
+            )
+        )
+
+
 def plot_cross_corr(df, path):
     corr = df.corr()
 
@@ -123,7 +182,7 @@ def plot_cross_corr(df, path):
     )
     g.ax_heatmap.set(xlabel="Features", ylabel="Features")
 
-    file = os.path.join(path, "feature_cross_correlation_clustermap.png")
+    file = path / "feature_cross_correlation_clustermap.png"
     g.savefig(file)
     plt.close()
 
@@ -135,9 +194,10 @@ def plot_tsne_clusters(
     title="t-SNE of Clustered Syllables",
     cbar_label="Cluster ID",
     filename=None,
+    random_state=DEFAULT_RANDOM_SEED,
 ):
     """Plot t-SNE of clustered syllable features."""
-    tsne_embedding = compute_tsne_embedding(pcs)
+    tsne_embedding = compute_tsne_embedding(pcs, random_state=random_state)
 
     fig = plt.figure(figsize=(8, 6))
     ax = fig.gca()
@@ -154,7 +214,7 @@ def plot_tsne_clusters(
     fig.colorbar(im, ax=ax, label=cbar_label)
     if filename is None:
         filename = "tsne_clusters.png"
-    plt.savefig(os.path.join(output_path, filename))
+    plt.savefig(output_path / filename)
     plt.close()
 
 
@@ -164,6 +224,7 @@ def plot_individual_clusters(
     existing_mask,
     output_path,
     title_prefix="Cluster",
+    random_state=DEFAULT_RANDOM_SEED,
 ):
     """
     Create individual t-SNE plots for clusters that contain new syllables, colored by new vs existing syllables.
@@ -176,11 +237,11 @@ def plot_individual_clusters(
     - title_prefix: Prefix for plot titles
     """
     # Create a new folder for individual cluster plots
-    cluster_plots_dir = os.path.join(output_path, "individual_cluster_plots")
-    os.makedirs(cluster_plots_dir, exist_ok=True)
+    cluster_plots_dir = output_path / "individual_cluster_plots"
+    cluster_plots_dir.mkdir(parents=True, exist_ok=True)
     
     # Compute t-SNE on all data
-    tsne_embedding = compute_tsne_embedding(all_pcs)
+    tsne_embedding = compute_tsne_embedding(all_pcs, random_state=random_state)
     
     # Get unique cluster labels
     unique_clusters = np.unique(all_labels)
@@ -245,7 +306,7 @@ def plot_individual_clusters(
         
         # Save the plot
         plt.savefig(
-            os.path.join(cluster_plots_dir, "cluster_{}.png".format(cluster_id)),
+            cluster_plots_dir / "cluster_{}.png".format(cluster_id),
             dpi=150,
             bbox_inches="tight",
         )
@@ -259,13 +320,14 @@ def cluster_syllables(
     output_path,
     n_clusters=None,
     algorithm="kmeans",
-    seed=0,
+    seed=DEFAULT_RANDOM_SEED,
     pc_components=20,
     max_clusters=300,
 ):
     """Cluster syllables based on their features."""
     # first, reduce dimensionality with PCA
-    pca = PCA(n_components=pc_components)
+    validate_pc_components(pc_components, df)
+    pca = PCA(n_components=pc_components, random_state=seed)
     pcs = pca.fit_transform(df.values)
 
     plt.figure(figsize=(6, 4))
@@ -273,7 +335,7 @@ def cluster_syllables(
     plt.xlabel("Number of Principal Components")
     plt.ylabel("Cumulative Explained Variance")
     plt.title("PCA Explained Variance")
-    plt.savefig(os.path.join(output_path, "pca_explained_variance.png"))
+    plt.savefig(output_path / "pca_explained_variance.png")
     plt.close()
 
     pcs = normalize(pcs, axis=1, norm="l2")
@@ -289,7 +351,7 @@ def cluster_syllables(
             # only allow for a minimum of 20 clusters.
             cluster_range = range(20, min(max_clusters, len(df) // 2), 3)
             for k in tqdm(cluster_range, desc="Finding optimal number of clusters"):
-                kmeans = KMeans(n_clusters=k, random_state=seed)
+                kmeans = KMeans(n_clusters=k, random_state=seed, n_init=10)
                 labels = kmeans.fit_predict(pcs)
                 sil = silhouette_score(pcs, labels)
                 sil_scores.append(sil)
@@ -303,10 +365,10 @@ def cluster_syllables(
             plt.xlabel("Number of clusters")
             plt.ylabel("Silhouette score")
             plt.title("Silhouette scores for different cluster numbers")
-            plt.savefig(os.path.join(output_path, "silhouette_scores.png"))
+            plt.savefig(output_path / "silhouette_scores.png")
             plt.close()
 
-        kmeans = KMeans(n_clusters=n_clusters, random_state=seed)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
         df["library_label"] = kmeans.fit_predict(pcs)
     else:
         raise NotImplementedError("Only kmeans clustering is currently supported.")
@@ -355,6 +417,71 @@ def load_and_preprocess_data(comparisons, initial_normalization_method="robust_z
     return feature_dfs
 
 
+def validate_experiment_names(comparisons, existing_library_df=None):
+    """Validate experiment names in comparison data and against an existing library."""
+    if "experiment_name" not in comparisons.columns:
+        raise ValueError("Comparison file must include an experiment_name column.")
+
+    duplicate_names = sorted(
+        comparisons.loc[
+            comparisons["experiment_name"].duplicated(keep=False),
+            "experiment_name",
+        ].dropna().unique()
+    )
+    if duplicate_names:
+        raise ValueError(
+            "Experiment names in comparison file must ALL be unique. Found duplicates: {}. "
+            "TIP: add experiment date to experiment for extra uniqueness.".format(
+                duplicate_names
+            )
+        )
+
+    if existing_library_df is None:
+        return
+
+    if "experiment_name" not in existing_library_df.columns:
+        raise ValueError("Existing library file must include an experiment_name column.")
+
+    existing_names = set(existing_library_df["experiment_name"].dropna().unique())
+    new_names = set(comparisons["experiment_name"].dropna().unique())
+    overlapping_names = sorted(new_names & existing_names)
+
+    if overlapping_names:
+        raise ValueError(
+            "New experiment names already exist in the library: {}. "
+            "Use unique experiment names; replacing existing experiments is not supported.".format(
+                overlapping_names
+            )
+        )
+
+
+def align_features_to_saved_columns(features, feature_columns):
+    """Validate and reorder feature columns to match the saved PCA input schema."""
+    if not feature_columns:
+        raise ValueError(
+            "Saved model objects do not include feature_columns, so PCA input order "
+            "cannot be validated. Regenerate the library with this version of the script."
+        )
+
+    feature_columns = list(feature_columns)
+    missing_columns = [col for col in feature_columns if col not in features.columns]
+    extra_columns = [col for col in features.columns if col not in feature_columns]
+
+    if missing_columns:
+        raise ValueError(
+            "New feature data is missing columns required by the saved PCA model: "
+            "{}".format(missing_columns)
+        )
+
+    if extra_columns:
+        print(
+            "Warning: ignoring extra feature columns not used by the saved PCA model: "
+            "{}".format(extra_columns)
+        )
+
+    return features.reindex(columns=feature_columns)
+
+
 def get_next_version(output_path, is_initial_library=False):
     """
     Determine the next version for the library using simplified vMAJOR.MINOR format.
@@ -366,9 +493,6 @@ def get_next_version(output_path, is_initial_library=False):
     Returns:
     - Next version string (e.g., "v1.0")
     """
-    output_path = Path(output_path)
-    manifest_file = output_path / "library_manifest.json"
-
     # Load existing manifest
     manifest = load_manifest(output_path)
 
@@ -404,7 +528,6 @@ def create_version_manifest(output_path, version_info, is_original_library=False
     - version_info: Dictionary with version information
     - is_original_library: True if this is the original library from generate-library
     """
-    output_path = Path(output_path)
     manifest_file = output_path / "library_manifest.json"
 
     # Load existing manifest
@@ -425,7 +548,7 @@ def create_version_manifest(output_path, version_info, is_original_library=False
     manifest["last_updated"] = datetime.now().isoformat()
 
     # Save manifest
-    with open(manifest_file, 'w') as f:
+    with manifest_file.open('w') as f:
         json.dump(manifest, f, indent=2)
 
     print("Version manifest updated: {}".format(manifest_file))
@@ -441,7 +564,6 @@ def manage_library_versions(output_path, keep_recent=3, archive_folder="archive"
     - keep_recent: Number of recent versions to keep in main directory (excluding original)
     - archive_folder: Name of archive subfolder
     """
-    output_path = Path(output_path)
     archive_path = output_path / archive_folder
     archive_path.mkdir(exist_ok=True)
 
@@ -547,6 +669,8 @@ def save_library_objects(
     # Add additional info if available
     if "previous_library_file" in extras:
         version_info["previous_library_file"] = extras["previous_library_file"]
+    if "random_seed" in extras:
+        version_info["random_seed"] = extras["random_seed"]
     
     create_version_manifest(output_path, version_info, is_initial_library)
     
@@ -589,7 +713,7 @@ def assign_to_existing_clusters(
     )
 
     plt.colorbar(label="Distance to Centroid")
-    fig.savefig(os.path.join(output_path, "distances_heatmap.png"))
+    fig.savefig(output_path / "distances_heatmap.png")
 
     # Flag syllables that are too far from any centroid
     new_cluster_mask = min_distances > distance_threshold
@@ -597,7 +721,13 @@ def assign_to_existing_clusters(
     return assigned_clusters, new_cluster_mask, min_distances
 
 
-def incremental_kmeans_update(kmeans_model, existing_pcs, new_pcs, new_cluster_mask, distance_threshold=0.65):
+def incremental_kmeans_update(
+    kmeans_model,
+    existing_pcs,
+    new_pcs,
+    new_cluster_mask,
+    seed=DEFAULT_RANDOM_SEED,
+):
     """
     Update a k-means model with new data, potentially adding new clusters.
     
@@ -606,7 +736,6 @@ def incremental_kmeans_update(kmeans_model, existing_pcs, new_pcs, new_cluster_m
     - existing_pcs: Existing principal components
     - new_pcs: New data points in PC space
     - new_cluster_mask: Boolean mask indicating which new points need new clusters
-    - distance_threshold: Distance threshold for creating new clusters
     
     Returns:
     - Updated KMeans model with potentially more clusters
@@ -635,7 +764,7 @@ def incremental_kmeans_update(kmeans_model, existing_pcs, new_pcs, new_cluster_m
             # Use KMeans to cluster the outliers
             outlier_kmeans = KMeans(
                 n_clusters=max_new_clusters,
-                random_state=42,
+                random_state=seed,
                 n_init=10
             )
             outlier_kmeans.fit(outlier_points)
@@ -658,19 +787,31 @@ def incremental_kmeans_update(kmeans_model, existing_pcs, new_pcs, new_cluster_m
         
         # Create new KMeans model with updated centroids
         updated_kmeans, all_labels = update_centroids_slightly(
-            kmeans_model, existing_pcs, new_pcs, max_iter=1, centroids=updated_centroids
+            kmeans_model,
+            existing_pcs,
+            new_pcs,
+            max_iter=1,
+            centroids=updated_centroids,
+            seed=seed,
         )
     else:
         
         # Create a new model with the same number of clusters
         updated_kmeans, all_labels = update_centroids_slightly(
-            kmeans_model, existing_pcs, new_pcs, max_iter=3
+            kmeans_model, existing_pcs, new_pcs, max_iter=3, seed=seed
         )
         
     return updated_kmeans, all_labels
 
 
-def update_centroids_slightly(kmeans_model, existing_pcs, new_pcs, max_iter=3, centroids=None):
+def update_centroids_slightly(
+    kmeans_model,
+    existing_pcs,
+    new_pcs,
+    max_iter=3,
+    centroids=None,
+    seed=DEFAULT_RANDOM_SEED,
+):
     """
     Slightly update existing centroids with new data without creating new clusters.
     
@@ -696,7 +837,8 @@ def update_centroids_slightly(kmeans_model, existing_pcs, new_pcs, max_iter=3, c
         n_clusters=len(centroids),
         init=centroids,
         max_iter=max_iter,  # Allow some optimization but limit it
-        n_init=1
+        n_init=1,
+        random_state=seed,
     )
     
     updated_kmeans.fit(combined_pcs)
@@ -739,46 +881,67 @@ def get_user_feedback(new_clusters_count):
     return response.lower() == "y"
 
 
-def apply_classifier(df, classifier_path):
+def has_syllable_quality(df):
+    """Return True when classifier quality output is present."""
+    return (
+        "syllable_quality" in df.columns
+        or "syllable_quality" in df.index.names
+    )
+
+
+def apply_classifier(df, classifier_path, require_quality=False):
     """
     Apply a trained classifier to the syllable dataframe.
     
     Parameters:
     - df: Dataframe containing syllable features
     - classifier_path: Path to the classifier bundle .pkl file
+    - require_quality: Whether to raise if syllable quality cannot be predicted
     
     Returns:
     - df: Dataframe with added classification columns
     """
+    def fail(message, exc=None):
+        if require_quality:
+            raise RuntimeError(message) from exc
+        print(f"Warning: {message} Skipping classification.")
+        return df
+
     if classifier_path is None:
+        if require_quality:
+            raise ValueError(
+                "--filter-quality requires --classifier-path so syllable_quality can be predicted."
+            )
         print("No classifier supplied, skipping classification")
         return df
 
     classifier_path = Path(classifier_path)
     if not classifier_path.exists():
-        print(f"Classifier path {classifier_path} does not exist. Skipping classification.")
-        return df
+        return fail(f"Classifier path {classifier_path} does not exist.")
 
     print(f"Loading classifier from {classifier_path}...")
     try:
         bundle = joblib.load(classifier_path)
-        
-        # Extract components
+    except Exception as e:
+        return fail(f"Error loading classifier: {e}", e)
+
+    try:
         syllable_pipeline = bundle.get('syllable_pipeline')
         quality_pipeline = bundle.get('quality_pipeline')
         train_cols = bundle.get('train_cols')
-        
-        if not all(x is not None for x in [syllable_pipeline, train_cols, quality_pipeline]):
-            print("Warning: Classifier bundle missing required components. Skipping.")
-            return df
-            
-        # Check if all training columns exist in df
-        missing_cols = set(train_cols) - set(df.columns)
-        if missing_cols:
-            print(f"Warning: Missing features for classification: {missing_cols}. Skipping.")
-            return df
-            
-        # Run predictions
+    except AttributeError as e:
+        return fail("Classifier bundle is not a mapping with required components.", e)
+
+    if not all(
+        x is not None for x in [syllable_pipeline, train_cols, quality_pipeline]
+    ):
+        return fail("Classifier bundle missing required components.")
+
+    missing_cols = set(train_cols) - set(df.columns)
+    if missing_cols:
+        return fail(f"Missing features for classification: {missing_cols}.")
+
+    try:
         print("Running syllable classification...")
         X = df[train_cols]
         
@@ -793,7 +956,10 @@ def apply_classifier(df, classifier_path):
         print(df.head())
         
     except Exception as e:
-        print(f"Error applying classifier: {e}")
+        return fail(f"Error applying classifier: {e}", e)
+
+    if require_quality and not has_syllable_quality(df):
+        raise RuntimeError("Classifier completed without producing syllable_quality.")
         
     return df
 
@@ -820,8 +986,9 @@ def cli():
 @click.option(
     "--seed",
     type=int,
-    default=0,
-    help="Random seed for clustering and t-SNE (default: 0).",
+    default=DEFAULT_RANDOM_SEED,
+    show_default=True,
+    help="Random seed for PCA, clustering, and t-SNE.",
 )
 @click.option(
     "--pc-components",
@@ -864,13 +1031,12 @@ def generate_library(
     
     CLASSIFIER_PATH: Optional path to a classifier bundle to predict syllable types and quality.
     """
+    set_random_seed(seed)
+    random_state_start = capture_random_state()
+
     # load the comparison file df
     comparisons = pd.read_csv(comparison_files)
-    if comparisons["experiment_name"].nunique() != len(comparisons):
-        raise ValueError(
-            "Experiment names in comparison file must ALL be unique. Found duplicates. "
-            "TIP: add experiment date to experiment for extra uniqueness."
-        )
+    validate_experiment_names(comparisons)
     print("Loaded comparison file:")
     print(comparisons.head(2))
 
@@ -882,14 +1048,16 @@ def generate_library(
     feature_dfs = load_and_preprocess_data(comparisons, initial_normalization_method)
 
     # Apply classifier if provided
-    feature_dfs = apply_classifier(feature_dfs, classifier_path)
+    feature_dfs = apply_classifier(
+        feature_dfs, classifier_path, require_quality=filter_quality
+    )
 
-    if filter_quality and classifier_path is not None:
+    if filter_quality:
         print("Filtering out low quality syllables...")
         low_quality_syllables = feature_dfs.query("syllable_quality == 'Low'").copy().index
         feature_dfs = feature_dfs.query("syllable_quality != 'Low'").copy()
-    elif filter_quality:
-        print("Warning: filter_quality is set to True but no classifier path was provided. Skipping quality filtering.")
+
+    feature_columns = list(feature_dfs.columns)
 
     # plot clustermap of feature cross-correlations
     plot_cross_corr(feature_dfs, output_path)
@@ -917,11 +1085,16 @@ def generate_library(
 
     # Generate t-SNE visualization
     plot_tsne_clusters(
-        pcs, library_df["library_label"], output_path, "t-SNE of Library Syllables"
+        pcs,
+        library_df["library_label"],
+        output_path,
+        "t-SNE of Library Syllables",
+        random_state=seed,
     )
 
     # Save library objects
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_state_end = capture_random_state()
     save_library_objects(
         library_df,
         pca,
@@ -931,7 +1104,11 @@ def generate_library(
         timestamp,
         initial_normalization_method,
         is_initial_library=True,
+        feature_columns=feature_columns,
         low_quality_syllables=locals().get("low_quality_syllables", None),
+        random_seed=seed,
+        random_state_start=random_state_start,
+        random_state_end=random_state_end,
     )
 
 
@@ -952,10 +1129,18 @@ def generate_library(
     help="Distance threshold for creating new clusters (default: 0.65).",
 )
 @click.option(
-    "--update-centroids",
-    type=bool,
+    "--update-centroids/--no-update-centroids",
     default=True,
     help="Whether to slightly update existing centroids when adding new data (default: True).",
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=None,
+    help=(
+        "Random seed for incremental clustering and t-SNE. "
+        "Defaults to the seed saved in CLUSTERING_FILE, or 0 for legacy files."
+    ),
 )
 @click.option(
     "--classifier-path",
@@ -969,7 +1154,15 @@ def generate_library(
     help="Filter out low quality syllables (default: False).",
 )
 def add_to_library(
-    new_data_files, library_file, clustering_file, output_path, distance_threshold, update_centroids, classifier_path, filter_quality
+    new_data_files,
+    library_file,
+    clustering_file,
+    output_path,
+    distance_threshold,
+    update_centroids,
+    seed,
+    classifier_path,
+    filter_quality,
 ):
     """Add new experiments to an existing syllable library.
 
@@ -982,29 +1175,39 @@ def add_to_library(
     2. Optionally create new clusters for syllables that are far from existing centroids
     3. Slightly update existing centroids to account for new data (if update_centroids=True)
     """
+    output_path = Path(output_path)
+    output_path.mkdir(exist_ok=True, parents=True)
+
     # Load existing library and objects
     library_df, pca, pcs, kmeans, model_objects = load_library_objects(
         library_file, clustering_file
     )
+    seed = resolve_random_seed(model_objects, seed)
+    set_random_seed(seed)
+    random_state_start = capture_random_state()
     initial_normalization_method = model_objects["normalization_type"]
 
     # Load new data
     new_comparisons = pd.read_csv(new_data_files)
+    validate_experiment_names(new_comparisons, library_df)
     new_features = load_and_preprocess_data(
         new_comparisons, initial_normalization_method
     )
     
     # Apply classifier if provided
-    new_features = apply_classifier(new_features, classifier_path)
-    if filter_quality and classifier_path is not None:
+    new_features = apply_classifier(
+        new_features, classifier_path, require_quality=filter_quality
+    )
+    if filter_quality:
         print("Filtering out low quality syllables...")
         low_quality_syllables = new_features.query("syllable_quality == 'Low'").copy().index
         new_features = new_features.query("syllable_quality != 'Low'").copy()
-    elif filter_quality:
-        print("Warning: filter_quality is set to True but no classifier path was provided. Skipping quality filtering.")
 
     # Apply existing preprocessing
-    new_pcs = pca.transform(new_features.values)
+    new_features_for_pca = align_features_to_saved_columns(
+        new_features, model_objects.get("feature_columns")
+    )
+    new_pcs = pca.transform(new_features_for_pca.values)
     new_pcs = normalize(new_pcs, axis=1, norm="l2")
 
     # Assign to existing clusters
@@ -1024,22 +1227,27 @@ def add_to_library(
     print("Found {} syllables that exceed the distance threshold of {}".format(new_clusters_count, distance_threshold))
 
     if new_clusters_count > 0:
-        new_syllables_df['cluster_candidate'] = new_cluster_mask
-        filt_df = new_syllables_df.loc[new_syllables_df['cluster_candidate'], ['experiment_name', 'syllable_id']]
-        msk = filt_df['syllable_id'].isin([30, 50, 42, 79])
-        print("Has these sylls", msk.sum())
-        print(filt_df[msk])
+        cluster_candidates = new_syllables_df.loc[
+            new_cluster_mask,
+            ["experiment_name", "syllable_id"],
+        ]
+        print("Cluster candidates:")
+        print(cluster_candidates)
     
     if update_centroids:
         if new_clusters_count > 0 and get_user_feedback(new_clusters_count):
             print("Creating new clusters using incremental clustering...")
             # Use incremental clustering to update the model
             kmeans, all_labels = incremental_kmeans_update(
-                kmeans, pcs, new_pcs, new_cluster_mask, distance_threshold
+                kmeans,
+                pcs,
+                new_pcs,
+                new_cluster_mask,
+                seed=seed,
             )
         else:
             kmeans, all_labels = update_centroids_slightly(
-                kmeans, pcs, new_pcs, max_iter=2
+                kmeans, pcs, new_pcs, max_iter=2, seed=seed
             )
             
         # Update labels and model using helper function
@@ -1054,9 +1262,6 @@ def add_to_library(
 
     # Combine old and new library
     updated_library = pd.concat([library_df, new_syllables_df], ignore_index=True)
-    
-    # Generate visualizations
-    os.makedirs(output_path, exist_ok=True)
 
     # Combined t-SNE plot
     all_pcs = np.vstack([pcs, new_pcs])
@@ -1073,6 +1278,7 @@ def add_to_library(
         "t-SNE of Updated Library",
         cbar_label="0=Existing, 1=New",
         filename="tsne_updated_library.png",
+        random_state=seed,
     )
     
     # Also plot the actual cluster assignments
@@ -1083,6 +1289,7 @@ def add_to_library(
         "t-SNE of Updated Library with Cluster Labels",
         cbar_label="Cluster ID",
         filename="tsne_updated_library_clusters.png",
+        random_state=seed,
     )
 
     plot_individual_clusters(
@@ -1091,10 +1298,12 @@ def add_to_library(
         existing_mask,
         output_path,
         title_prefix="Cluster",
+        random_state=seed,
     )
     
     # Save updated library
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_state_end = capture_random_state()
     save_library_objects(
         updated_library,
         pca,
@@ -1104,8 +1313,12 @@ def add_to_library(
         timestamp,
         initial_normalization_method,
         is_initial_library=False,
-        previous_library_file=os.path.basename(library_file),
+        previous_library_file=Path(library_file).name,
+        feature_columns=model_objects.get("feature_columns"),
         low_quality_syllables=locals().get("low_quality_syllables", None),
+        random_seed=seed,
+        random_state_start=random_state_start,
+        random_state_end=random_state_end,
     )
 
 
