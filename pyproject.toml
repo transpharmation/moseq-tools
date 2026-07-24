@@ -45,3 +45,4 @@ generate-meta-clustering-features="moseq_tools.generate_meta_clustering_features
 meta-cluster-syllable-ids="moseq_tools.meta_cluster_syllable_ids:main"
 syllable-library="moseq_tools.syllable_library:cli"
 generate-syllable-library-features="moseq_tools.generate_syllable_library_features:main"
+video-qc="moseq_tools.video_qc:main"
