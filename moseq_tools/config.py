@@ -35,7 +35,7 @@ def apply_path_to_config(
     data = yaml.safe_load(content)
     for key, value in data.items():
         # Find configuration values that have <TEMPLATE_PATH> within
-        if type(value) == str and template in value:
+        if isinstance(value, str) and template in value:
             data[key] = replace_path_component(value, template, path)
 
     with open(TARGET_CONFIG_FILE, 'w') as f:
