@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: moseq_tools
-Version: 0.2.5
+Version: 0.5.0
 Summary: MoSEQ utilities
 Requires-Dist: pyyaml
 Requires-Dist: ruamel.yaml
@@ -9,6 +9,8 @@ Requires-Dist: h5py
 Requires-Dist: joblib
 Requires-Dist: numpy
 Requires-Dist: toolz
+Requires-Dist: seaborn
+Requires-Dist: scikit-learn
 Requires-Dist: scipy
 Requires-Dist: pandas
 Requires-Dist: tqdm
